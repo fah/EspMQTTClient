@@ -184,6 +184,25 @@ void EspMQTTClient::loop()
 {
   unsigned long currentMillis = millis();
 
+  if (WiFi.status() != WL_CONNECTED){
+    if (mWifiConnected) 
+    {
+      if (mEnableSerialLogs)
+        Serial.println("WiFi! Lost connection.");
+      
+      mWifiConnected = false;
+
+      // If we handle wifi, we force disconnection to clear the last connection
+      if (mWifiSsid != NULL)
+        WiFi.disconnect();
+    }
+    
+    // We retry to connect to the wifi if we handle it and there was no attempt since the last connection lost
+    if (mWifiSsid != NULL && (mLastWifiConnectionAttemptMillis == 0 || mLastWifiConnectionSuccessMillis > mLastWifiConnectionAttemptMillis))
+      connectToWifi();
+  }
+	
+	
   if (WiFi.status() == WL_CONNECTED)
   {
     // If we just being connected to wifi
@@ -237,24 +256,7 @@ void EspMQTTClient::loop()
     }
       
   }
-  else // If we are not connected to wifi
-  {
-    if (mWifiConnected) 
-    {
-      if (mEnableSerialLogs)
-        Serial.println("WiFi! Lost connection.");
-      
-      mWifiConnected = false;
-
-      // If we handle wifi, we force disconnection to clear the last connection
-      if (mWifiSsid != NULL)
-        WiFi.disconnect();
-    }
-    
-    // We retry to connect to the wifi if we handle it and there was no attempt since the last connection lost
-    if (mWifiSsid != NULL && (mLastWifiConnectionAttemptMillis == 0 || mLastWifiConnectionSuccessMillis > mLastWifiConnectionAttemptMillis))
-      connectToWifi();
-  }
+ 
   
   // Delayed execution handling
   if (mDelayedExecutionListSize > 0)
@@ -404,21 +406,65 @@ void EspMQTTClient::executeDelayed(const unsigned long delay, DelayedExecutionCa
 
 // ================== Private functions ====================-
 
+
 void EspMQTTClient::connectToWifi()
 {
   WiFi.mode(WIFI_STA);
-  #ifdef ESP32
-    WiFi.setHostname(mMqttClientName);
-  #else
-    WiFi.hostname(mMqttClientName);
-  #endif
-  WiFi.begin(mWifiSsid, mWifiPassword);
+#ifdef ESP32
+  WiFi.setHostname(mMqttClientName);
+#else
+  WiFi.hostname(mMqttClientName);
+#endif
 
   if (mEnableSerialLogs)
-    Serial.printf("\nWiFi: Connecting to %s ... \n", mWifiSsid);
-  
+    Serial.printf("\nWiFi: Connecting to %s .", mWifiSsid);
+
+#ifdef ESP32
+  int tryCount = 0;
+  bool myWiFiFirstConnect = true;
+  wl_status_t state = WiFi.status();
+  while (state != WL_CONNECTED && tryCount <= 5)
+  {
+    tryCount++;
+
+    if (state == WL_NO_SHIELD || state != WL_CONNECTED) {
+      if (mEnableSerialLogs) Serial.println("Connecting WiFi");
+
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(mWifiSsid, mWifiPassword);
+      vTaskDelay (250);
+
+    } else if (state == WL_CONNECT_FAILED) {  // WiFi.begin has failed (AUTH_FAIL)
+      if (mEnableSerialLogs) Serial.println("Disconnecting WiFi");
+
+      WiFi.disconnect(true);
+
+    } else if (state == WL_DISCONNECTED) {  // WiFi.disconnect was done or Router.WiFi got out of range
+      if (!myWiFiFirstConnect) {  // Report only once
+        myWiFiFirstConnect = true;
+
+        if (mEnableSerialLogs) Serial.println("WiFi disconnected");
+      }
+    }
+
+    state = WiFi.status();
+  }
+  if (mEnableSerialLogs) {
+    if (state == WL_CONNECTED) {
+      Serial.print(" -> Connected: IP ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.printf(" -> NOT Connected\n");
+    }
+  }
+#else
+  WiFi.begin(mWifiSsid, mWifiPassword);
+#endif
   mLastWifiConnectionAttemptMillis = millis();
 }
+
+
+
 
 void EspMQTTClient::connectToMqttBroker()
 {
